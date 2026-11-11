@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, readFileSync, mkdirSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
 import { createApp } from '../server/index.mjs';
 import { validIsbn, normalizeIsbn } from '../server/isbn.mjs';
 import { lookup } from '../server/catalog.mjs';
@@ -48,6 +49,38 @@ test('health, CRUD, partial update, delete and missing item', async t => {
   assert.deepEqual((await request('/api/items')).body.items, []);
 });
 
+test('profiles and their settings persist on the server and isolate collections', async t => {
+  const { dataDir, server, request } = await fixture(t);
+  const createdProfile = await request('/api/profiles', 'POST', { name: 'Ana', settings: { zoom: 1.25 } });
+  assert.equal(createdProfile.response.status, 201);
+  const anaHeaders = { 'X-Profile': 'Ana' };
+  const added = await request('/api/items', 'POST', { ...book, title: 'Livro da Ana' }, anaHeaders);
+  assert.equal(added.response.status, 201);
+  assert.equal((await request('/api/items')).body.items.length, 0);
+  assert.equal((await request('/api/items', 'GET', undefined, anaHeaders)).body.items[0].title, 'Livro da Ana');
+  await request('/api/profiles/Ana', 'PUT', { settings: { zoom: 1.5, theme: 'olive' } }, anaHeaders);
+  assert.deepEqual((await request('/api/profiles')).body.profiles.find(profile => profile.name === 'Ana').settings, { zoom: 1.5, theme: 'olive' });
+  await new Promise(resolve => server.close(resolve));
+  const restarted = createApp({ dataDir });
+  restarted.listen(0, '127.0.0.1');
+  await once(restarted, 'listening');
+  const persisted = await fetch(`http://127.0.0.1:${restarted.address().port}/api/items`, { headers: anaHeaders });
+  assert.equal((await persisted.json()).items[0].title, 'Livro da Ana');
+  assert.deepEqual((await (await fetch(`http://127.0.0.1:${restarted.address().port}/api/profiles`)).json()).profiles.find(profile => profile.name === 'Ana').settings, { zoom: 1.5, theme: 'olive' });
+  await new Promise(resolve => restarted.close(resolve));
+});
+
+test('only achievement rewards can be added, after reaching their book milestones', async t => {
+  const { request } = await fixture(t);
+  assert.equal((await request('/api/items', 'POST', { type: 'object', title: 'Planta', objectKind: 'plant' })).response.status, 403);
+  assert.equal((await request('/api/items', 'POST', { type: 'object', title: 'Recordação', objectKind: 'keepsake' })).response.status, 403);
+  await request('/api/items', 'POST', book);
+  assert.equal((await request('/api/items', 'POST', { type: 'object', title: 'Recordação', objectKind: 'keepsake' })).response.status, 201);
+  assert.equal((await request('/api/items', 'POST', { type: 'object', title: 'Peluche', objectKind: 'plush' })).response.status, 403);
+  const reward = (await request('/api/items')).body.items.find(item => item.type === 'object');
+  assert.equal((await request(`/api/items/${reward.id}`, 'PUT', { objectKind: 'plant' })).response.status, 403);
+});
+
 test('stored items survive server restart with the same SQLite directory', async t => {
   const { dataDir, server, request } = await fixture(t);
   const created = (await request('/api/items', 'POST', book)).body;
@@ -58,6 +91,36 @@ test('stored items survive server restart with the same SQLite directory', async
   const response = await fetch(`http://127.0.0.1:${restarted.address().port}/api/items`);
   assert.equal((await response.json()).items[0].id, created.id);
   await new Promise(resolve => restarted.close(resolve));
+});
+
+test('migrates old positions and persists moves, alphabetical order and reading history', async t => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'bookshelf-migration-'));
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+  const db = new DatabaseSync(join(dataDir, 'bookshelf.sqlite'));
+  db.exec('CREATE TABLE items (id TEXT PRIMARY KEY, payload TEXT NOT NULL)');
+  const legacy = { ...book, id: 'demo-book-1', shelf: 3, description: 'Uma memória' };
+  db.prepare('INSERT INTO items VALUES (?, ?)').run(legacy.id, JSON.stringify(legacy));
+  db.close();
+  const dates = ['2025-02-01', '2026-05-01'];
+  const first = await fixture(t, { dataDir });
+  const migrated = (await first.request('/api/items')).body.items[0];
+  assert.equal(migrated.id, legacy.id);
+  assert.equal(migrated.description, legacy.description);
+  assert.deepEqual({ cabinet: migrated.cabinet, order: migrated.order, layoutX: migrated.layoutX, layoutY: migrated.layoutY, rotation: migrated.rotation, bookWidth: migrated.bookWidth, bookHeight: migrated.bookHeight }, { cabinet: 0, order: 0, layoutX: 0, layoutY: 0, rotation: 0, bookWidth: 25, bookHeight: 220 });
+  const created = (await first.request('/api/items', 'POST', {
+    type: 'book', title: 'Água', cabinet: 0, shelf: 3, readingStatus: 'finished', completions: dates,
+  })).body;
+  assert.equal((await first.request('/api/layout', 'POST', { mode: 'title' })).body.items[0].id, created.id);
+  assert.equal((await first.request('/api/layout', 'POST', { mode: 'move', id: legacy.id, cabinet: 4, shelf: 2 })).response.status, 200);
+  await new Promise(resolve => first.server.close(resolve));
+  const restarted = await fixture(t, { dataDir });
+  const { items } = (await restarted.request('/api/items')).body;
+  assert.deepEqual(items.map(({ id, cabinet, shelf, order }) => [id, cabinet, shelf, order]), [
+    [created.id, 0, 3, 0], [legacy.id, 4, 2, 0],
+  ]);
+  assert.deepEqual(items[0].completions, dates);
+  assert.equal(items[1].description, legacy.description);
+  await new Promise(resolve => restarted.server.close(resolve));
 });
 
 test('validation rejects missing title, invalid ISBN, shelf, colour, type and data types', async t => {
@@ -72,11 +135,11 @@ test('demo seeding is idempotent, retains personal data and edits to demo items'
   const { request, base } = await fixture(t);
   await request('/api/items', 'POST', book);
   const first = (await request('/api/demo', 'POST')).body.items;
-  assert.equal(first.length, 17);
-  assert.equal(first.filter(item => item.type === 'object').length, 5);
+  assert.equal(first.length, 14);
+  assert.equal(first.filter(item => item.type === 'object').length, 2);
   await request('/api/items/demo-book-1', 'PUT', { title: 'O meu título' });
   const second = (await request('/api/demo', 'POST')).body.items;
-  assert.equal(second.length, 17);
+  assert.equal(second.length, 14);
   assert.equal(second.find(item => item.id === 'demo-book-1').title, 'O meu título');
   const cover = await fetch(`${base}${second.find(item => item.id === 'demo-book-1').coverUrl}`);
   assert.equal(cover.status, 200);

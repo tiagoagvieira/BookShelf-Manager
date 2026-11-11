@@ -37,7 +37,19 @@ Inicie o Caddy usando esse ficheiro. A porta HTTPS deve ser acessível apenas pe
 
 Depois, abra `https://192.168.1.50`, confirme que o browser não apresenta erros de certificado e autorize a câmara. Ignorar um aviso de certificado não substitui instalar a confiança corretamente. No iOS, poderá ser necessário ativar a confiança total no certificado nas definições. Teste num telemóvel real: uma simulação de browser não comprova o funcionamento da câmara física.
 
-Estas instruções são uma preparação para instalação doméstica. A rede, a firewall, o certificado e os dispositivos da sua casa não foram configurados nem validados no ambiente de desenvolvimento.
+### Configuração incluída para Windows
+
+O `Caddyfile` na raiz usa a porta 8443, escuta apenas no IP indicado e aceita pedidos apenas da sub-rede indicada. Com o servidor da aplicação em `127.0.0.1:3001`, execute no PowerShell a partir da raiz do projeto, substituindo os endereços pelos da sua rede:
+
+```powershell
+$env:BOOKSHELF_LAN_IP = '192.168.1.50'
+$env:BOOKSHELF_LAN_SUBNET = '192.168.1.0/24'
+$env:XDG_DATA_HOME = Join-Path $PWD 'data/tls'
+$env:XDG_CONFIG_HOME = Join-Path $PWD 'data/tls'
+caddy run --config Caddyfile --adapter caddyfile
+```
+
+Distribua apenas `data/tls/caddy/pki/authorities/local/root.crt`. Instale-o como autoridade de confiança no telemóvel e abra `https://192.168.1.50:8443`, usando o IP configurado. A chave da autoridade e os restantes ficheiros em `data/tls` devem permanecer no servidor. Se a firewall impedir a ligação, a regra de entrada deve limitar-se à porta 8443 e à sub-rede doméstica no perfil privado.
 
 ## Sem Internet
 

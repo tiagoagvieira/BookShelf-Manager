@@ -29,10 +29,7 @@ export function demoItems(mediaDir) {
     return { id: `demo-book-${index + 1}`, type: 'book', title, author, isbn: '', language: 'pt', description: 'Livro de demonstração. Capa ilustrativa, não corresponde à capa de uma edição comercial.', category, coverUrl: `/media/${filename}`, shelf, color, objectKind: '' };
   });
   return [...items, ...[
-    ['Um bocadinho de verde', 'plant', 0, '#658167'],
+    ['Um pequeno tesouro', 'keepsake', 0, '#8d6349'],
     ['O meu companheiro de leitura', 'plush', 1, '#c99d6b'],
-    ['Recordação de Hogwarts', 'magic', 2, '#b79c60'],
-    ['Medalha da meia maratona', 'trophy', 2, '#c5a34c'],
-    ['Uma viagem a Lisboa', 'souvenir', 3, '#6e9aa1'],
   ].map(([title, objectKind, shelf, color], index) => ({ id: `demo-object-${index + 1}`, type: 'object', title, objectKind, shelf, color, author: '', isbn: '', language: '', description: 'Adereço de demonstração.', category: 'Memórias', coverUrl: '' }))];
 }
