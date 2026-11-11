@@ -1,0 +1,17 @@
+{
+	admin off
+	auto_https disable_redirects
+	skip_install_trust
+}
+
+https://{$BOOKSHELF_LAN_IP:127.0.0.1}:8443 {
+	bind {$BOOKSHELF_LAN_IP:127.0.0.1}
+	tls internal
+	@home remote_ip {$BOOKSHELF_LAN_SUBNET:127.0.0.1/32}
+	handle @home {
+		reverse_proxy 127.0.0.1:3001
+	}
+	handle {
+		respond "Acesso reservado à rede local." 403
+	}
+}
